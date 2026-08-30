@@ -32,7 +32,7 @@ try:
     aws_access_key = st.secrets["aws_access_key_id"]
     aws_secret_key = st.secrets["aws_secret_access_key"]
     aws_region = "us-east-1"
-    s3_staging_dir = "s3://wistia-analytics-raw-871049984307-us-east-1-an/athena-queries/"
+    s3_staging_dir = "s3://wistia-analytics-raw-871049984307-us-east-1-an"
 except Exception as e:
     st.error("🔑 Secrets configuration missing! Verify your Streamlit Secrets tab parameters.")
     st.stop()
