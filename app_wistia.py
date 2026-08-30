@@ -17,8 +17,10 @@ st.markdown("Real-time pipeline data pulled serverless from **AWS S3 Delta Lake*
 try:
     aws_access_key = st.secrets["aws_access_key_id"]
     aws_secret_key = st.secrets["aws_secret_access_key"]
-    aws_region = st.secrets["aws_region"]
-    s3_staging_dir = st.secrets["s3_staging_dir"]
+    # aws_region = st.secrets["aws_region"]
+    # s3_staging_dir = st.secrets["s3_staging_dir"]
+    aws_region = "us-east-1"
+    s3_staging_dir = "s3://wistia-analytics-raw-871049984307-us-east-1-an/
 except Exception as e:
     st.error("🔑 Secrets configuration missing! Please ensure your credentials are set up inside the Streamlit Secrets tab.")
     st.stop()
