@@ -20,7 +20,7 @@ try:
     # aws_region = st.secrets["aws_region"]
     # s3_staging_dir = st.secrets["s3_staging_dir"]
     aws_region = "us-east-1"
-    s3_staging_dir = "s3://wistia-analytics-raw-871049984307-us-east-1-an/
+    s3_staging_dir = "s3://wistia-analytics-raw-871049984307-us-east-1-an/"
 except Exception as e:
     st.error("🔑 Secrets configuration missing! Please ensure your credentials are set up inside the Streamlit Secrets tab.")
     st.stop()
