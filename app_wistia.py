@@ -91,8 +91,16 @@ selected_country = st.sidebar.selectbox("Visitor country", country_options)
 
 filtered = df.copy()
 if isinstance(date_range, tuple) and len(date_range) == 2:
-    start, end = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
-    filtered = filtered[(filtered["date"] >= start) & (filtered["date"] <= end)]
+    # 1. Normalize data column cleanly to a string date layout (YYYY-MM-DD)
+    filtered_dates = pd.to_datetime(filtered["date"], errors="coerce").dt.date
+    
+    # 2. Extract boundary date variables straight from the Streamlit input tuple
+    start_val = date_range[0]
+    end_val = date_range[1]
+    
+    # 3. Apply comparison masking safely across exact matching dates
+    filtered = filtered[(filtered_dates >= start_val) & (filtered_dates <= end_val)]
+
 
 if selected_video != "All videos":
     filtered = filtered[filtered["title"] == selected_video]
