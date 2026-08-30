@@ -13,25 +13,42 @@ import pandas as pd
 import plotly.express as px
 from deltalake import DeltaTable
 
-st.set_page_config(page_title="Wistia Video Engagement Dashboard", layout="wide")
+# ----------------------------------------------------
+# PAGE CONFIG
+# ----------------------------------------------------
+st.set_page_config(
+    page_title="Wistia Marketing Video Analytics",
+    page_icon="🧠",
+    layout="wide"
+)
+
+st.title("🧠 Wistia Cross-Channel Video Analytics Dashboard")
+st.markdown("### 📊 Marketing Performance Control Center (Requirements Validation)")
 
 # ----------------------------------------------------
-# CONFIG
+# CONFIG — retrieve environment connection parameters from Streamlit's encrypted Secrets Vault
 # ----------------------------------------------------
-BUCKET_NAME = st.secrets.get("BUCKET_NAME", "")
-AWS_ACCESS_KEY_ID = st.secrets.get("AWS_ACCESS_KEY_ID", "")
-AWS_SECRET_ACCESS_KEY = st.secrets.get("AWS_SECRET_ACCESS_KEY", "")
-AWS_REGION = st.secrets.get("AWS_REGION", "us-east-1")
+try:
+    aws_access_key = st.secrets["aws_access_key_id"]
+    aws_secret_key = st.secrets["aws_secret_access_key"]
+    aws_region = "us-east-1"
+    s3_staging_dir = "s3://wistia-analytics-raw-871049984307-us-east-1-an/athena-queries/"
+except Exception as e:
+    st.error("🔑 Secrets configuration missing! Verify your Streamlit Secrets tab parameters.")
+    st.stop()
 
 STORAGE_OPTIONS = {
-    "AWS_ACCESS_KEY_ID": AWS_ACCESS_KEY_ID,
-    "AWS_SECRET_ACCESS_KEY": AWS_SECRET_ACCESS_KEY,
-    "AWS_REGION": AWS_REGION,
+    "AWS_ACCESS_KEY_ID": aws_access_key,
+    "AWS_SECRET_ACCESS_KEY": aws_secret_key,
+    "AWS_REGION": aws_region,
 }
 
-GOLD_DIM_MEDIA_PATH = f"s3://{BUCKET_NAME}/gold/dim_media"
-GOLD_DIM_VISITOR_PATH = f"s3://{BUCKET_NAME}/gold/dim_visitor"
-GOLD_FACT_ENGAGEMENT_PATH = f"s3://{BUCKET_NAME}/gold/fact_media_engagement"
+# s3_staging_dir is the base S3 URI for the data lake (e.g. "s3://your-bucket"),
+# gold tables live under the /gold/ prefix beneath it.
+BASE_S3_PATH = s3_staging_dir.rstrip("/")
+GOLD_DIM_MEDIA_PATH = f"{BASE_S3_PATH}/gold/dim_media"
+GOLD_DIM_VISITOR_PATH = f"{BASE_S3_PATH}/gold/dim_visitor"
+GOLD_FACT_ENGAGEMENT_PATH = f"{BASE_S3_PATH}/gold/fact_media_engagement"
 
 
 # ----------------------------------------------------
@@ -89,12 +106,8 @@ if selected_country != "All countries":
     filtered = filtered[filtered["country"] == selected_country]
 
 # ----------------------------------------------------
-# HEADER + KPI ROW
-# ----------------------------------------------------
-st.title("Wistia Video Engagement Dashboard")
-st.caption("Media-level and visitor-level analytics from the Wistia Stats API pipeline.")
-
-total_plays = filtered["play_count"].sum()
+# KPI ROW
+# ----------------------------------------------------total_plays = filtered["play_count"].sum()
 unique_visitors = filtered["visitor_id"].nunique()
 avg_watched_pct = filtered["watched_percent"].mean()
 active_videos = filtered["media_id"].nunique()
