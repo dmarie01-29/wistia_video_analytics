@@ -1,110 +1,216 @@
+"""
+app_wistia_dashboard.py
+
+Streamlit dashboard for the marketing team, reading the gold-tier Delta tables
+produced by the Wistia medallion pipeline (dim_media, dim_visitor, fact_media_engagement).
+
+Deploy via Streamlit Community Cloud, pulling from GitHub — same pattern as app_gp.py.
+AWS credentials are read from st.secrets, not local disk.
+"""
+
 import streamlit as st
 import pandas as pd
-from pyathena import connect
+import plotly.express as px
+from deltalake import DeltaTable
 
-# Set up page configurations
-st.set_page_config(
-    page_title="Wistia Video Analytics Control Center",
-    page_icon="🧠",
-    layout="wide"
-)
+st.set_page_config(page_title="Wistia Video Engagement Dashboard", layout="wide")
 
-# Application Title Block
-st.title("🧠 Wistia Business Video Analytics Control Center")
-st.markdown("Real-time pipeline data pulled serverless from **AWS S3 Delta Lake** using **Amazon Athena** query routing.")
+# ----------------------------------------------------
+# CONFIG
+# ----------------------------------------------------
+BUCKET_NAME = st.secrets.get("BUCKET_NAME", "")
+AWS_ACCESS_KEY_ID = st.secrets.get("AWS_ACCESS_KEY_ID", "")
+AWS_SECRET_ACCESS_KEY = st.secrets.get("AWS_SECRET_ACCESS_KEY", "")
+AWS_REGION = st.secrets.get("AWS_REGION", "us-east-1")
 
-# Retrieve environment connection parameters from Streamlit's encrypted Secrets Vault
+STORAGE_OPTIONS = {
+    "AWS_ACCESS_KEY_ID": AWS_ACCESS_KEY_ID,
+    "AWS_SECRET_ACCESS_KEY": AWS_SECRET_ACCESS_KEY,
+    "AWS_REGION": AWS_REGION,
+}
+
+GOLD_DIM_MEDIA_PATH = f"s3://{BUCKET_NAME}/gold/dim_media"
+GOLD_DIM_VISITOR_PATH = f"s3://{BUCKET_NAME}/gold/dim_visitor"
+GOLD_FACT_ENGAGEMENT_PATH = f"s3://{BUCKET_NAME}/gold/fact_media_engagement"
+
+
+# ----------------------------------------------------
+# DATA LOADING (cached so repeat interactions don't re-hit S3)
+# ----------------------------------------------------
+@st.cache_data(ttl=600)
+def load_gold_tables():
+    dim_media = DeltaTable(GOLD_DIM_MEDIA_PATH, storage_options=STORAGE_OPTIONS).to_pandas()
+    dim_visitor = DeltaTable(GOLD_DIM_VISITOR_PATH, storage_options=STORAGE_OPTIONS).to_pandas()
+    fact = DeltaTable(GOLD_FACT_ENGAGEMENT_PATH, storage_options=STORAGE_OPTIONS).to_pandas()
+
+    fact["date"] = pd.to_datetime(fact["date"], errors="coerce")
+
+    enriched = (
+        fact.merge(dim_media, on="media_id", how="left", suffixes=("", "_media"))
+            .merge(dim_visitor, on="visitor_id", how="left", suffixes=("", "_visitor"))
+    )
+    return dim_media, dim_visitor, fact, enriched
+
+
 try:
-    aws_access_key = st.secrets["aws_access_key_id"]
-    aws_secret_key = st.secrets["aws_secret_access_key"]
-    # aws_region = st.secrets["aws_region"]
-    # s3_staging_dir = st.secrets["s3_staging_dir"]
-    aws_region = "us-east-1"
-    s3_staging_dir = "s3://wistia-analytics-raw-871049984307-us-east-1-an/"
+    dim_media, dim_visitor, fact, df = load_gold_tables()
 except Exception as e:
-    st.error("🔑 Secrets configuration missing! Verify your Streamlit Secrets tab parameters.")
+    st.error(f"Could not load data from S3: {e}")
     st.stop()
 
-@st.cache_data(ttl=60)  # Short caching execution logic for responsive dashboard updates
-def run_athena_query(query_string):
-    conn = connect(
-        aws_access_key_id=aws_access_key,
-        aws_secret_access_key=aws_secret_key,
-        region_name=aws_region,
-        s3_staging_dir=s3_staging_dir
+if df.empty:
+    st.warning("No engagement data available yet. Check that the pipeline has run successfully.")
+    st.stop()
+
+# ----------------------------------------------------
+# SIDEBAR FILTERS
+# ----------------------------------------------------
+st.sidebar.header("Filters")
+
+min_date, max_date = df["date"].min(), df["date"].max()
+date_range = st.sidebar.date_input(
+    "Date range",
+    value=(min_date.date(), max_date.date()) if pd.notna(min_date) else None,
+)
+
+video_options = ["All videos"] + sorted(df["title"].dropna().unique().tolist())
+selected_video = st.sidebar.selectbox("Video", video_options)
+
+country_options = ["All countries"] + sorted(df["country"].dropna().unique().tolist())
+selected_country = st.sidebar.selectbox("Visitor country", country_options)
+
+filtered = df.copy()
+if isinstance(date_range, tuple) and len(date_range) == 2:
+    start, end = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
+    filtered = filtered[(filtered["date"] >= start) & (filtered["date"] <= end)]
+if selected_video != "All videos":
+    filtered = filtered[filtered["title"] == selected_video]
+if selected_country != "All countries":
+    filtered = filtered[filtered["country"] == selected_country]
+
+# ----------------------------------------------------
+# HEADER + KPI ROW
+# ----------------------------------------------------
+st.title("Wistia Video Engagement Dashboard")
+st.caption("Media-level and visitor-level analytics from the Wistia Stats API pipeline.")
+
+total_plays = filtered["play_count"].sum()
+unique_visitors = filtered["visitor_id"].nunique()
+avg_watched_pct = filtered["watched_percent"].mean()
+active_videos = filtered["media_id"].nunique()
+
+k1, k2, k3, k4 = st.columns(4)
+k1.metric("Total Plays", f"{total_plays:,.0f}")
+k2.metric("Unique Visitors", f"{unique_visitors:,}")
+k3.metric("Avg. % Watched", f"{avg_watched_pct:.1f}%" if pd.notna(avg_watched_pct) else "—")
+k4.metric("Active Videos", f"{active_videos:,}")
+
+st.divider()
+
+# ----------------------------------------------------
+# TABS
+# ----------------------------------------------------
+tab_overview, tab_videos, tab_visitors, tab_raw = st.tabs(
+    ["Trends", "Video Performance", "Visitor Insights", "Raw Data"]
+)
+
+# --- Trends tab ---
+with tab_overview:
+    st.subheader("Engagement Over Time")
+
+    if filtered["date"].notna().any():
+        daily = (
+            filtered.dropna(subset=["date"])
+            .assign(day=filtered["date"].dt.date)
+            .groupby("day")
+            .agg(plays=("play_count", "sum"), unique_visitors=("visitor_id", "nunique"))
+            .reset_index()
+        )
+        fig_trend = px.line(
+            daily, x="day", y=["plays", "unique_visitors"],
+            labels={"value": "Count", "day": "Date", "variable": "Metric"},
+            title="Daily Plays vs. Unique Visitors",
+        )
+        st.plotly_chart(fig_trend, use_container_width=True)
+    else:
+        st.info("No dated events in the current filter selection.")
+
+    st.subheader("Watch-Percentage Distribution")
+    fig_hist = px.histogram(
+        filtered, x="watched_percent", nbins=20,
+        labels={"watched_percent": "% of Video Watched"},
+        title="How Much of the Video Do Viewers Typically Watch?",
     )
-    return pd.read_sql(query_string, conn)
+    st.plotly_chart(fig_hist, use_container_width=True)
 
-# -------------------------------------------------------------------
-# REQUIREMENT TARGETING: FR3 & FR4 - Media-Level Metadata & Metrics
-# -------------------------------------------------------------------
-media_metrics_query = """
-SELECT 
-    m.media_id AS "Video ID",
-    m.title AS "Video Title",
-    m.channel AS "Distribution Channel",
-    m.created_at AS "Ingested Timestamp",
-    SUM(f.play_count) AS "Total Plays (FR4)",
-    AVG(f.play_rate) * 100 AS "Average Play Rate % (FR4)",
-    SUM(f.total_watch_time) AS "Total Watch Time (Sec) (FR4)"
-FROM wistia_analytics_db.fact_media_engagement f
-JOIN wistia_analytics_db.dim_media m ON f.media_id = m.media_id
-GROUP BY m.media_id, m.title, m.channel, m.created_at;
-"""
+# --- Video Performance tab ---
+with tab_videos:
+    st.subheader("Top Videos by Plays")
 
-# -------------------------------------------------------------------
-# REQUIREMENT TARGETING: FR5 - Visitor-Level Data & Engagement Events
-# -------------------------------------------------------------------
-visitor_events_query = """
-SELECT 
-    f.date AS "Event Date/Time",
-    f.visitor_id AS "Visitor ID (FR5)",
-    v.ip_address AS "IP Address (FR5)",
-    v.country AS "Country",
-    m.title AS "Interacted Video",
-    f.watched_percent AS "Completion % (FR5)"
-FROM wistia_analytics_db.fact_media_engagement f
-JOIN wistia_analytics_db.dim_visitor v ON f.visitor_id = v.visitor_id
-JOIN wistia_analytics_db.dim_media m ON f.media_id = m.media_id
-ORDER BY f.date DESC;
-"""
+    video_perf = (
+        filtered.groupby("title")
+        .agg(
+            plays=("play_count", "sum"),
+            unique_visitors=("visitor_id", "nunique"),
+            avg_watched_pct=("watched_percent", "mean"),
+        )
+        .reset_index()
+        .sort_values("plays", ascending=False)
+    )
 
-with st.spinner("Streaming operational matrices from S3 Gold Delta Tables..."):
-    try:
-        df_media = run_athena_query(media_metrics_query)
-        df_visitor = run_athena_query(visitor_events_query)
-    except Exception as err:
-        st.error(f"Athena Execution Error: {err}")
-        st.stop()
+    fig_bar = px.bar(
+        video_perf, x="title", y="plays",
+        title="Plays by Video",
+        labels={"title": "Video", "plays": "Plays"},
+    )
+    st.plotly_chart(fig_bar, use_container_width=True)
 
-# --- TAB VIEW RENDERING FOR CLEAN ASSIGNMENT GRADING ---
-tab1, tab2 = st.tabs(["📹 Media-Level Performance (FR3 & FR4)", "🕵 Visitor-Level Tracking (FR5)"])
+    st.subheader("Engagement Quality by Video")
+    fig_scatter = px.scatter(
+        video_perf, x="plays", y="avg_watched_pct", size="unique_visitors",
+        hover_name="title",
+        labels={"plays": "Total Plays", "avg_watched_pct": "Avg. % Watched"},
+        title="Reach (plays) vs. Engagement Depth (avg. % watched)",
+    )
+    st.plotly_chart(fig_scatter, use_container_width=True)
 
-with tab1:
-    st.subheader("Extracting Video Metadata & Engagement Summaries")
-    st.markdown("Provides the marketing team visibility into overall asset penetration across channels.")
-    
-    if not df_media.empty:
-        # Highlight top aggregate performance scores using metrics indicators
-        m_col1, m_col2, m_col3 = st.columns(3)
-        m_col1.metric("Global Ingested Views", value=int(df_media["Total Plays (FR4)"].sum()))
-        m_col2.metric("Mean Performance Play Rate", value=f"{df_media['Average Play Rate % (FR4)'].mean():.1f}%")
-        m_col3.metric("Accumulated Retention (Sec)", value=int(df_media["Total Watch Time (Sec) (FR4)"].sum()))
-        
-        st.dataframe(df_media, use_container_width=True, hide_index=True)
-    else:
-        st.info("No media analytics records resolved.")
+    st.dataframe(video_perf, use_container_width=True)
 
-with tab2:
-    st.subheader("Auditing Granular Visitor Playback Sessions")
-    st.markdown("Maps distinct user footprint signals (IPs, locations, watch behaviors) to verify unique interactions.")
-    
-    if not df_visitor.empty:
-        st.dataframe(df_visitor, use_container_width=True, hide_index=True)
-        
-        # Simple distribution metrics overview for marketing strategy analysis
-        st.subheader("🌍 Geographic Engagement Footprint")
-        geo_data = df_visitor.groupby("Country").size().reset_index(name="Sessions Logged")
-        st.bar_chart(data=geo_data, x="Country", y="Sessions Logged", use_container_width=True)
-    else:
-        st.info("No visitor metrics records resolved.")
+# --- Visitor Insights tab ---
+with tab_visitors:
+    st.subheader("Visitors by Country")
+
+    country_counts = (
+        filtered.groupby("country")["visitor_id"]
+        .nunique()
+        .reset_index(name="unique_visitors")
+        .sort_values("unique_visitors", ascending=False)
+    )
+
+    fig_country = px.bar(
+        country_counts.head(20), x="country", y="unique_visitors",
+        title="Top 20 Countries by Unique Visitors",
+    )
+    st.plotly_chart(fig_country, use_container_width=True)
+
+    st.subheader("Returning vs. One-Time Viewers")
+    visits_per_visitor = filtered.groupby("visitor_id")["play_count"].sum()
+    returning = (visits_per_visitor > 1).sum()
+    one_time = (visits_per_visitor == 1).sum()
+    fig_pie = px.pie(
+        names=["Returning viewers", "One-time viewers"],
+        values=[returning, one_time],
+        title="Viewer Loyalty Split",
+    )
+    st.plotly_chart(fig_pie, use_container_width=True)
+
+# --- Raw Data tab ---
+with tab_raw:
+    st.subheader("Filtered Engagement Records")
+    st.dataframe(filtered, use_container_width=True)
+    st.download_button(
+        "Download filtered data as CSV",
+        data=filtered.to_csv(index=False).encode("utf-8"),
+        file_name="wistia_engagement_filtered.csv",
+        mime="text/csv",
+    )
