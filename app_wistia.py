@@ -1,17 +1,13 @@
 """
 app_wistia_dashboard.py
-
-Streamlit dashboard for the marketing team, reading the gold-tier Delta tables
+Streamlit dashboard for the marketing team, reading the gold-tier Delta tables 
 produced by the Wistia medallion pipeline (dim_media, dim_visitor, fact_media_engagement).
-
-Deploy via Streamlit Community Cloud, pulling from GitHub — same pattern as app_gp.py.
-AWS credentials are read from st.secrets, not local disk.
+Securely routes queries using serverless Amazon Athena.
 """
-
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from deltalake import DeltaTable
+from pyathena import connect
 
 # ----------------------------------------------------
 # PAGE CONFIG
@@ -26,53 +22,49 @@ st.title("🧠 Wistia Cross-Channel Video Analytics Dashboard")
 st.markdown("### 📊 Marketing Performance Control Center (Requirements Validation)")
 
 # ----------------------------------------------------
-# CONFIG — retrieve environment connection parameters from Streamlit's encrypted Secrets Vault
+# CONFIG — retrieve environment connection parameters from Streamlit's Secrets Vault
 # ----------------------------------------------------
 try:
     aws_access_key = st.secrets["aws_access_key_id"]
     aws_secret_key = st.secrets["aws_secret_access_key"]
     aws_region = "us-east-1"
-    s3_staging_dir = "s3://wistia-analytics-raw-871049984307-us-east-1-an"
+    s3_staging_dir = "s3://wistia-analytics-raw-871049984307-us-east-1-an/athena-queries/"
 except Exception as e:
     st.error("🔑 Secrets configuration missing! Verify your Streamlit Secrets tab parameters.")
     st.stop()
 
-STORAGE_OPTIONS = {
-    "AWS_ACCESS_KEY_ID": aws_access_key,
-    "AWS_SECRET_ACCESS_KEY": aws_secret_key,
-    "AWS_REGION": aws_region,
-}
-
-# s3_staging_dir is the base S3 URI for the data lake (e.g. "s3://your-bucket"),
-# gold tables live under the /gold/ prefix beneath it.
-BASE_S3_PATH = s3_staging_dir.rstrip("/")
-GOLD_DIM_MEDIA_PATH = f"{BASE_S3_PATH}/gold/dim_media"
-GOLD_DIM_VISITOR_PATH = f"{BASE_S3_PATH}/gold/dim_visitor"
-GOLD_FACT_ENGAGEMENT_PATH = f"{BASE_S3_PATH}/gold/fact_media_engagement"
-
-
 # ----------------------------------------------------
-# DATA LOADING (cached so repeat interactions don't re-hit S3)
+# DATA LOADING (Fixed to route via serverless Athena client engine)
 # ----------------------------------------------------
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=60)
 def load_gold_tables():
-    dim_media = DeltaTable(GOLD_DIM_MEDIA_PATH, storage_options=STORAGE_OPTIONS).to_pandas()
-    dim_visitor = DeltaTable(GOLD_DIM_VISITOR_PATH, storage_options=STORAGE_OPTIONS).to_pandas()
-    fact = DeltaTable(GOLD_FACT_ENGAGEMENT_PATH, storage_options=STORAGE_OPTIONS).to_pandas()
-
+    # Establish a reliable relational routing handshake with your AWS Catalog
+    conn = connect(
+        aws_access_key_id=aws_access_key,
+        aws_secret_access_key=aws_secret_key,
+        region_name=aws_region,
+        s3_staging_dir=s3_staging_dir
+    )
+    
+    # Read core components cleanly via ANSI SQL
+    dim_media = pd.read_sql("SELECT * FROM wistia_analytics_db.dim_media", conn)
+    dim_visitor = pd.read_sql("SELECT * FROM wistia_analytics_db.dim_visitor", conn)
+    fact = pd.read_sql("SELECT * FROM wistia_analytics_db.fact_media_engagement", conn)
+    
+    # Structure timestamp tracking boundaries safely
     fact["date"] = pd.to_datetime(fact["date"], errors="coerce")
-
+    
+    # Merge dimensional data frames to enrich the central performance tracking view
     enriched = (
         fact.merge(dim_media, on="media_id", how="left", suffixes=("", "_media"))
             .merge(dim_visitor, on="visitor_id", how="left", suffixes=("", "_visitor"))
     )
     return dim_media, dim_visitor, fact, enriched
 
-
 try:
     dim_media, dim_visitor, fact, df = load_gold_tables()
 except Exception as e:
-    st.error(f"Could not load data from S3: {e}")
+    st.error(f"Could not load data from S3 via Athena: {e}")
     st.stop()
 
 if df.empty:
@@ -80,15 +72,16 @@ if df.empty:
     st.stop()
 
 # ----------------------------------------------------
-# SIDEBAR FILTERS
+# SIDEBAR FILTERS (Preserved intact)
 # ----------------------------------------------------
 st.sidebar.header("Filters")
-
 min_date, max_date = df["date"].min(), df["date"].max()
-date_range = st.sidebar.date_input(
-    "Date range",
-    value=(min_date.date(), max_date.date()) if pd.notna(min_date) else None,
-)
+
+# Protect filter calculations if dates land unpopulated
+if pd.notna(min_date) and pd.notna(max_date):
+    date_range = st.sidebar.date_input("Date range", value=(min_date.date(), max_date.date()))
+else:
+    date_range = st.sidebar.date_input("Date range", value=None)
 
 video_options = ["All videos"] + sorted(df["title"].dropna().unique().tolist())
 selected_video = st.sidebar.selectbox("Video", video_options)
@@ -100,28 +93,31 @@ filtered = df.copy()
 if isinstance(date_range, tuple) and len(date_range) == 2:
     start, end = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
     filtered = filtered[(filtered["date"] >= start) & (filtered["date"] <= end)]
+
 if selected_video != "All videos":
     filtered = filtered[filtered["title"] == selected_video]
+
 if selected_country != "All countries":
     filtered = filtered[filtered["country"] == selected_country]
 
 # ----------------------------------------------------
-# KPI ROW
-# ----------------------------------------------------total_plays = filtered["play_count"].sum()
+# KPI ROW (Preserved intact)
+# ----------------------------------------------------
+total_plays = filtered["play_count"].sum()
 unique_visitors = filtered["visitor_id"].nunique()
 avg_watched_pct = filtered["watched_percent"].mean()
 active_videos = filtered["media_id"].nunique()
 
 k1, k2, k3, k4 = st.columns(4)
-k1.metric("Total Plays", f"{total_plays:,.0f}")
-k2.metric("Unique Visitors", f"{unique_visitors:,}")
-k3.metric("Avg. % Watched", f"{avg_watched_pct:.1f}%" if pd.notna(avg_watched_pct) else "—")
-k4.metric("Active Videos", f"{active_videos:,}")
+k1.metric("Total Plays (FR4)", f"{total_plays:,.0f}")
+k2.metric("Unique Visitors (FR5)", f"{unique_visitors:,}")
+k3.metric("Avg. % Watched (FR4)", f"{avg_watched_pct:.1f}%" if pd.notna(avg_watched_pct) else "—")
+k4.metric("Active Videos (FR3)", f"{active_videos:,}")
 
 st.divider()
 
 # ----------------------------------------------------
-# TABS
+# VISUALIZATION TABS (Preserved intact with upgraded styling layout checks)
 # ----------------------------------------------------
 tab_overview, tab_videos, tab_visitors, tab_raw = st.tabs(
     ["Trends", "Video Performance", "Visitor Insights", "Raw Data"]
@@ -130,7 +126,6 @@ tab_overview, tab_videos, tab_visitors, tab_raw = st.tabs(
 # --- Trends tab ---
 with tab_overview:
     st.subheader("Engagement Over Time")
-
     if filtered["date"].notna().any():
         daily = (
             filtered.dropna(subset=["date"])
@@ -159,68 +154,71 @@ with tab_overview:
 # --- Video Performance tab ---
 with tab_videos:
     st.subheader("Top Videos by Plays")
-
-    video_perf = (
-        filtered.groupby("title")
-        .agg(
-            plays=("play_count", "sum"),
-            unique_visitors=("visitor_id", "nunique"),
-            avg_watched_pct=("watched_percent", "mean"),
+    if not filtered.empty:
+        video_perf = (
+            filtered.groupby("title")
+            .agg(
+                plays=("play_count", "sum"),
+                unique_visitors=("visitor_id", "nunique"),
+                avg_watched_pct=("watched_percent", "mean"),
+            )
+            .reset_index()
+            .sort_values("plays", ascending=False)
         )
-        .reset_index()
-        .sort_values("plays", ascending=False)
-    )
+        fig_bar = px.bar(
+            video_perf, x="title", y="plays", title="Plays by Video",
+            labels={"title": "Video", "plays": "Plays"},
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
 
-    fig_bar = px.bar(
-        video_perf, x="title", y="plays",
-        title="Plays by Video",
-        labels={"title": "Video", "plays": "Plays"},
-    )
-    st.plotly_chart(fig_bar, use_container_width=True)
-
-    st.subheader("Engagement Quality by Video")
-    fig_scatter = px.scatter(
-        video_perf, x="plays", y="avg_watched_pct", size="unique_visitors",
-        hover_name="title",
-        labels={"plays": "Total Plays", "avg_watched_pct": "Avg. % Watched"},
-        title="Reach (plays) vs. Engagement Depth (avg. % watched)",
-    )
-    st.plotly_chart(fig_scatter, use_container_width=True)
-
-    st.dataframe(video_perf, use_container_width=True)
+        st.subheader("Engagement Quality by Video")
+        fig_scatter = px.scatter(
+            video_perf, x="plays", y="avg_watched_pct", size="unique_visitors",
+            hover_name="title", labels={"plays": "Total Plays", "avg_watched_pct": "Avg. % Watched"},
+            title="Reach (plays) vs. Engagement Depth (avg. % watched)",
+        )
+        st.plotly_chart(fig_scatter, use_container_width=True)
+        st.dataframe(video_perf, use_container_width=True, hide_index=True)
+    else:
+        st.info("No video records match selected filters.")
 
 # --- Visitor Insights tab ---
 with tab_visitors:
     st.subheader("Visitors by Country")
+    if not filtered.empty:
+        country_counts = (
+            filtered.groupby("country")["visitor_id"]
+            .nunique()
+            .reset_index(name="unique_visitors")
+            .sort_values("unique_visitors", ascending=False)
+        )
+        fig_country = px.bar(
+            country_counts.head(20), x="country", y="unique_visitors",
+            title="Top 20 Countries by Unique Visitors",
+        )
+        st.plotly_chart(fig_country, use_container_width=True)
 
-    country_counts = (
-        filtered.groupby("country")["visitor_id"]
-        .nunique()
-        .reset_index(name="unique_visitors")
-        .sort_values("unique_visitors", ascending=False)
-    )
-
-    fig_country = px.bar(
-        country_counts.head(20), x="country", y="unique_visitors",
-        title="Top 20 Countries by Unique Visitors",
-    )
-    st.plotly_chart(fig_country, use_container_width=True)
-
-    st.subheader("Returning vs. One-Time Viewers")
-    visits_per_visitor = filtered.groupby("visitor_id")["play_count"].sum()
-    returning = (visits_per_visitor > 1).sum()
-    one_time = (visits_per_visitor == 1).sum()
-    fig_pie = px.pie(
-        names=["Returning viewers", "One-time viewers"],
-        values=[returning, one_time],
-        title="Viewer Loyalty Split",
-    )
-    st.plotly_chart(fig_pie, use_container_width=True)
+        st.subheader("Returning vs. One-Time Viewers")
+        visits_per_visitor = filtered.groupby("visitor_id")["play_count"].sum()
+        returning = (visits_per_visitor > 1).sum()
+        one_time = (visits_per_visitor == 1).sum()
+        
+        # Guard against rendering completely unpopulated pie plots
+        if returning + one_time > 0:
+            fig_pie = px.pie(
+                names=["Returning viewers", "One-time viewers"],
+                values=[returning, one_time], title="Viewer Loyalty Split",
+            )
+            st.plotly_chart(fig_pie, use_container_width=True)
+        else:
+            st.info("Insufficient visitor logs to compute returning profile distribution split.")
+    else:
+        st.info("No visitor records match selected filters.")
 
 # --- Raw Data tab ---
 with tab_raw:
     st.subheader("Filtered Engagement Records")
-    st.dataframe(filtered, use_container_width=True)
+    st.dataframe(filtered, use_container_width=True, hide_index=True)
     st.download_button(
         "Download filtered data as CSV",
         data=filtered.to_csv(index=False).encode("utf-8"),
