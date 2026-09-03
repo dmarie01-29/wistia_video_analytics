@@ -117,10 +117,10 @@ avg_watched_pct = filtered["watched_percent"].mean()
 active_videos = filtered["media_id"].nunique()
 
 k1, k2, k3, k4 = st.columns(4)
-k1.metric("Total Plays (FR4)", f"{total_plays:,.0f}")
-k2.metric("Unique Visitors (FR5)", f"{unique_visitors:,}")
-k3.metric("Avg. % Watched (FR4)", f"{avg_watched_pct:.1f}%" if pd.notna(avg_watched_pct) else "—")
-k4.metric("Active Videos (FR3)", f"{active_videos:,}")
+k1.metric("Total Plays", f"{total_plays:,.0f}")
+k2.metric("Unique Visitors", f"{unique_visitors:,}")
+k3.metric("Avg. % Watched", f"{avg_watched_pct:.1f}%" if pd.notna(avg_watched_pct) else "—")
+k4.metric("Active Videos", f"{active_videos:,}")
 
 st.divider()
 
