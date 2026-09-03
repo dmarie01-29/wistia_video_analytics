@@ -19,7 +19,7 @@ st.set_page_config(
 )
 
 st.title("🧠 Wistia Cross-Channel Video Analytics Dashboard")
-st.markdown("### 📊 Marketing Performance Control Center (Requirements Validation)")
+st.markdown("### 📊 Marketing Performance Overview")
 
 # ----------------------------------------------------
 # CONFIG — retrieve environment connection parameters from Streamlit's Secrets Vault
